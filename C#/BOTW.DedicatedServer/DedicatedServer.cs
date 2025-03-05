@@ -101,8 +101,8 @@ namespace BOTW.DedicatedServer
             blueskyrain
         }
 
-        Dictionary<string, Vec3f> LandmarkPositions = JsonConvert.DeserializeObject<Dictionary<string, Vec3f>>(File.ReadAllText(Directory.GetCurrentDirectory() + "/Landmarks.json"));
-        List<ProphuntLocation> ServerProphuntLocations = JsonConvert.DeserializeObject<List<ProphuntLocation>>(File.ReadAllText(Directory.GetCurrentDirectory() + "/PropHuntLocations.json"));
+        Dictionary<string, Vec3f> LandmarkPositions = JsonConvert.DeserializeObject<Dictionary<string, Vec3f>>(File.ReadAllText(Path.Combine(Directory.GetCurrentDirectory(), "Landmarks.json")));
+        List<ProphuntLocation> ServerProphuntLocations = JsonConvert.DeserializeObject<List<ProphuntLocation>>(File.ReadAllText(Path.Combine(Directory.GetCurrentDirectory(), "PropHuntLocations.json")));
 
         public void setup()
         {
@@ -331,78 +331,106 @@ namespace BOTW.DedicatedServer
             }
         }
         
-        public void setupCommands()
+// This is the primary fix for the setupCommands() method
+public void setupCommands()
+{
+    // Use Path.Combine for cross-platform path handling
+    string appdataFolder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+
+    // On Linux, we should use the current directory instead of AppData which is Windows-specific
+    if (Environment.OSVersion.Platform == PlatformID.Unix || Environment.OSVersion.Platform == PlatformID.MacOSX)
+    {
+        appdataFolder = Directory.GetCurrentDirectory();
+    }
+
+    string botWmDir = Path.Combine(appdataFolder, "BOTWM");
+    string fileName = "QuestFlagsNames.txt";
+    string fullPath = Path.Combine(botWmDir, fileName);
+
+    // Check if file exists in the expected location
+    if (!File.Exists(fullPath))
+    {
+        // Try direct path from current directory as fallback
+        fullPath = Path.Combine(Directory.GetCurrentDirectory(), "BOTWM", fileName);
+
+        // If still not found, log error and exit
+        if (!File.Exists(fullPath))
         {
-            string AppdataFolder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + "\\BOTWM";
-            string fileName = "\\QuestFlagsNames.txt";
+            Logger.LogError($"Could not find quest flags file at {fullPath}");
+            Logger.LogError("Please ensure the file exists in the BOTWM directory");
+            return;
+        }
+    }
 
-            string text = File.ReadAllText(AppdataFolder + fileName);
+    string text = File.ReadAllText(fullPath);
+    QuestData = JsonConvert.DeserializeObject<Dictionary<string, List<string>>>(text);
 
-            QuestData = JsonConvert.DeserializeObject<Dictionary<string, List<string>>>(text);
+    serverVariables.Add("time", "t");
+    serverVariables.Add("day", "d");
+    serverVariables.Add("weather", "w");
 
-            serverVariables.Add("time", "t");
-            serverVariables.Add("day", "d");
-            serverVariables.Add("weather", "w");
+    Gamemodes = JsonConvert.DeserializeObject<List<ServerSettings>>(File.ReadAllText(Path.Combine(Directory.GetCurrentDirectory(), "Gamemodes.json")));
 
-            //Gamemodes.Add("Game Completion", new bool[] { true, true, true, false, true, true, true, false, false });
-            //Gamemodes.Add("Hunter VS Speedrunner", new bool[] { true, true, false, false, true, true, true, false, true });
-            //Gamemodes.Add("Any% Speedrun", new bool[] { true, true, false, false, true, true, true, false, false });
-            //Gamemodes.Add("Bingo???", new bool[] { true, true, false, false, true, true, true, false, false });
-            //Gamemodes.Add("Hide n' Seek", new bool[] { true, true, false, false, false, false, false, false, false });
+    var methods = AppDomain.CurrentDomain.GetAssemblies()
+        .SelectMany(x => x.GetTypes())
+        .Where(x => x.IsClass)
+        .SelectMany(x => x.GetMethods())
+        .Where(x => x.GetCustomAttributes(typeof(ServerCommand), false).FirstOrDefault() != null && x.GetCustomAttributes(typeof(Description), false).FirstOrDefault() != null);
 
-            Gamemodes = JsonConvert.DeserializeObject<List<ServerSettings>>(File.ReadAllText(Directory.GetCurrentDirectory() + "/Gamemodes.json"));
+    foreach (var method in methods)
+    {
+        List<string> alternateNames = new List<string>();
 
-            var methods = AppDomain.CurrentDomain.GetAssemblies()
-                .SelectMany(x => x.GetTypes())
-                .Where(x => x.IsClass)
-                .SelectMany(x => x.GetMethods())
-                .Where(x => x.GetCustomAttributes(typeof(ServerCommand), false).FirstOrDefault() != null && x.GetCustomAttributes(typeof(Description), false).FirstOrDefault() != null);
+        foreach (AlternateName attribute in method.GetCustomAttributes(typeof(AlternateName), false))
+        {
+            alternateNames.Add(attribute.name);
+        }
 
-            foreach (var method in methods)
+        bool shouldAdd = true;
+
+        foreach (var parameter in method.GetParameters())
+        {
+            if (parameter.ParameterType != typeof(string))
             {
-                List<string> alternateNames = new List<string>();
-
-                foreach (AlternateName attribute in method.GetCustomAttributes(typeof(AlternateName), false))
-                {
-                    alternateNames.Add(attribute.name);
-                }
-
-                bool shouldAdd = true;
-
-                foreach (var parameter in method.GetParameters())
-                {
-                    if (parameter.ParameterType != typeof(string))
-                    {
-                        shouldAdd = false;
-                    }
-                }
-
-                if (!shouldAdd) continue;
-
-                CommandList.Add(new Command(method, method.Name, ((Description)method.GetCustomAttribute(typeof(Description), false)).description, alternateNames));
+                shouldAdd = false;
             }
         }
 
-        public void CopyAppdataFiles()
+        if (!shouldAdd) continue;
+
+        CommandList.Add(new Command(method, method.Name, ((Description)method.GetCustomAttribute(typeof(Description), false)).description, alternateNames));
+    }
+}
+
+public void CopyAppdataFiles()
+{
+    string appdataFolder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+
+    // On Linux, we should use the current directory instead
+    if (Environment.OSVersion.Platform == PlatformID.Unix || Environment.OSVersion.Platform == PlatformID.MacOSX)
+    {
+        appdataFolder = Directory.GetCurrentDirectory();
+    }
+
+    string botWmDir = Path.Combine(appdataFolder, "BOTWM");
+    List<string> Resources = Assembly.GetExecutingAssembly().GetManifestResourceNames().Where(resource => resource.Contains("AppdataFiles")).ToList();
+
+    if (!Directory.Exists(botWmDir))
+        Directory.CreateDirectory(botWmDir);
+
+    foreach (string resource in Resources)
+    {
+        Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream(resource);
+        string output = Path.Combine(botWmDir, resource.Replace("BOTW.DedicatedServer.AppdataFiles.", ""));
+
+        using (FileStream AppdataFile = new FileStream(output, FileMode.Create))
         {
-            string AppdataFolder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + "\\BOTWM";
-            List<string> Resources = Assembly.GetExecutingAssembly().GetManifestResourceNames().Where(resource => resource.Contains("AppdataFiles")).ToList();
-
-            if (!Directory.Exists(AppdataFolder))
-                Directory.CreateDirectory(AppdataFolder);
-
-            foreach (string resource in Resources)
-            {
-                Stream s = Assembly.GetExecutingAssembly().GetManifestResourceStream(resource);
-                string output = $"{AppdataFolder}\\{resource.Replace("BOTW.DedicatedServer.AppdataFiles.", "")}";
-                using (FileStream AppdataFile = new FileStream(output, FileMode.Create))
-                {
-                    byte[] b = new byte[s.Length + 1];
-                    s.Read(b, 0, Convert.ToInt32(s.Length));
-                    AppdataFile.Write(b, 0, Convert.ToInt32(b.Length - 1));
-                }
-            }
+            byte[] b = new byte[s.Length + 1];
+            s.Read(b, 0, Convert.ToInt32(s.Length));
+            AppdataFile.Write(b, 0, Convert.ToInt32(b.Length - 1));
         }
+    }
+}
 
         [ServerCommand]
         [AlternateName("Commands")]

@@ -3,6 +3,11 @@ using BOTWM.Server.DataTypes;
 using BOTWM.Server.DTO;
 using BOTWM.Server.HelperTypes;
 using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
 
 namespace BOTWM.Server.ServerClasses
 {
@@ -48,8 +53,120 @@ namespace BOTWM.Server.ServerClasses
         static Mutex DataMutex = new Mutex();
         public static Mutex DeathSwapMutex = new Mutex();
 
+        /// <summary>
+        /// Helper method to find a file across multiple possible locations
+        /// </summary>
+        static private string FindFile(string fileName)
+        {
+            // Build a list of directories to search in priority order
+            List<string> searchDirectories = new List<string>();
+
+            // Add current directory and BOTWM subdirectory
+            searchDirectories.Add(Directory.GetCurrentDirectory());
+            searchDirectories.Add(Path.Combine(Directory.GetCurrentDirectory(), "BOTWM"));
+
+            // On Windows, also check AppData
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+            {
+                searchDirectories.Add(Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "BOTWM"));
+            }
+
+            // Search in all directories
+            foreach (string directory in searchDirectories)
+            {
+                string fullPath = Path.Combine(directory, fileName);
+                if (File.Exists(fullPath))
+                {
+                    return fullPath;
+                }
+            }
+
+            // If file not found, look for files with name containing the requested filename
+            foreach (string directory in searchDirectories)
+            {
+                if (!Directory.Exists(directory)) continue;
+
+                string[] files = Directory.GetFiles(directory);
+                foreach (string file in files)
+                {
+                    if (Path.GetFileName(file).Contains(fileName))
+                    {
+                        return file;
+                    }
+                }
+            }
+
+            // If still not found, return null
+            return null;
+        }
+
+        /// <summary>
+        /// Ensures that all required files exist in the correct locations
+        /// </summary>
+        static public void EnsureRequiredFiles()
+        {
+            // Create BOTWM directory if it doesn't exist
+            string botWmDir = Path.Combine(Directory.GetCurrentDirectory(), "BOTWM");
+            if (!Directory.Exists(botWmDir))
+            {
+                try
+                {
+                    Directory.CreateDirectory(botWmDir);
+                    Logger.LogInformation($"Created directory: {botWmDir}");
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError($"Failed to create directory {botWmDir}: {ex.Message}");
+                }
+            }
+
+            // Check for key required files and copy if needed
+            string[] requiredFiles = {
+                "ArmorMapping.txt",
+                "QuestFlagsNames.txt"
+            };
+
+            foreach (string fileName in requiredFiles)
+            {
+                string destPath = Path.Combine(botWmDir, fileName);
+
+                // If file doesn't exist in BOTWM dir
+                if (!File.Exists(destPath))
+                {
+                    try
+                    {
+                        // Check current directory for files with the filename in their name
+                        string[] possibleFiles = Directory.GetFiles(
+                            Directory.GetCurrentDirectory(),
+                            $"*{fileName}*",
+                            SearchOption.TopDirectoryOnly);
+
+                        if (possibleFiles.Length > 0)
+                        {
+                            // Copy the first matching file
+                            File.Copy(possibleFiles[0], destPath, true);
+                            Logger.LogInformation($"Copied {possibleFiles[0]} to {destPath}");
+                        }
+                        else
+                        {
+                            Logger.LogWarning($"Could not find any file containing '{fileName}' in the current directory");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.LogError($"Error setting up {fileName}: {ex.Message}");
+                    }
+                }
+            }
+        }
+
         static public void Startup(string ip, int port, string password, string description, ServerSettings settings)
         {
+            // Ensure required files exist first
+            EnsureRequiredFiles();
+
             WorldData = new World();
             PlayerList = new List<Player>();
 
@@ -293,7 +410,7 @@ namespace BOTWM.Server.ServerClasses
                     player.MiiData = UserConfiguration.ModelData.Mii;
                     break;
                 }
-                counter++;  
+                counter++;
             }
 
             DataMutex.ReleaseMutex();
@@ -370,10 +487,28 @@ namespace BOTWM.Server.ServerClasses
 
         static private Dictionary<string, string> ReadArmorMappingJson()
         {
-            string AppdataFolder = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData) + "\\BOTWM";
-            string ArmorMappingJson = File.ReadAllText(AppdataFolder + "\\ArmorMapping.txt");
+            try
+            {
+                // Find the armor mapping file
+                string armorMappingPath = FindFile("ArmorMapping.txt");
 
-            return JsonConvert.DeserializeObject<Dictionary<string, string>>(ArmorMappingJson);
+                if (string.IsNullOrEmpty(armorMappingPath))
+                {
+                    Logger.LogError("Could not find ArmorMapping.txt file");
+                    return new Dictionary<string, string>();
+                }
+
+                Logger.LogInformation($"Reading armor mapping from: {armorMappingPath}");
+
+                // Read and parse the file
+                string armorMappingText = File.ReadAllText(armorMappingPath);
+                return JsonConvert.DeserializeObject<Dictionary<string, string>>(armorMappingText);
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError($"Error reading armor mapping: {ex.Message}");
+                return new Dictionary<string, string>();
+            }
         }
 
         #endregion
